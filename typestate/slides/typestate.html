@@ -1,0 +1,899 @@
+<section>
+  <h1 style="margin-top: 14%;">Typestate via Revocable Capabilities</h1>
+  <u>Songlin Jia</u><sup style="color: gray;">1</sup>,
+  Craig Liu<sup style="color: gray;">1,2</sup>,
+  Siyuan He<sup style="color: gray;">1</sup>,
+  David Deng<sup style="color: gray;">1</sup>,
+  Yuyan Bao<sup style="color: gray;">3</sup>,
+  Tiark Rompf<sup style="color: gray;">1</sup> <br>
+  <em>Wed 17 Jun @ PLDI 2026</em>
+
+  <div class="refs" style="font-size: 100%; width: 100%;">
+    <img src="assets/PU-V-Full-RGB.svg" height="180em">
+    <img src="assets/purpl-banner.jpg" height="180em">
+    <sup style="vertical-align: top;">1</sup>
+    <div style="display: inline-block; width: 19%;"></div>
+    <img src="assets/ucb-logo.png" height="180em">
+    <sup style="vertical-align: top;">2</sup>
+    <img src="assets/augusta-logo.png" height="180em">
+    <sup style="vertical-align: top;">3</sup>
+  </div>
+  <aside class="notes">
+    Hi everyone, thanks for coming. I'm Songlin Jia from Purdue University, and
+    this is "Typestate via Revocable Capabilities" — joint work with my
+    wonderful collaborators, including my advisor, Tiark Rompf.
+  </aside>
+</section>
+
+<section data-visibility="hidden">
+  <ul id="toc" style="list-style: none; margin-top: 14%; width: 100%;">
+    <li data-id="what-is">What is Typestate?</li>
+    <li data-id="how-to">Our Approach</li>
+    <li data-id="showcase">Benefits!</li>
+  </ul>
+</section>
+
+
+<section>
+
+<section>
+  <div class="toc" data-focus="what-is">
+    <blockquote>Track state changes like types &mdash; statically</blockquote>
+  </div>
+  <aside class="notes">
+    So first: what is typestate? In simple words, typestate means tracking the
+    *state changes* of objects the same way we track types — statically, at
+    compile time.
+  </aside>
+</section>
+
+
+<section>
+  <h2>Example (1): Database Locks</h2>
+  <p>
+  Tracking lock states = flexible imperative code + static safety
+  </p>
+  <div>
+    <div class="half" style="width: 60%;">
+      <b>Scoped Blocks:</b> nested lock lifetimes❓
+      <pre><code data-trim class="language-java">
+        synchronized (table) {
+            var row = table.locateRow(...);
+            synchronized (row) {
+                return computeOnRow(row);
+            }
+        }
+      </code></pre>
+    </div>
+    <div class="my-mermaid half" style="margin: 0 -5%; vertical-align: bottom;">
+    sequenceDiagram
+        actor Program
+        participant Table@{ type: database }
+        participant Row@{ type: database }
+        rect rgb(220, 220, 255)
+        Program ->> Table:
+        end
+        rect rgb(255, 220, 220)
+        Program ->> Row:
+        note over Row: compute
+        Program --x Row:
+        end
+        rect rgb(220, 220, 255)
+        Program --x Table:
+        end
+    </div>
+  <div style="margin-top: 2%;">
+    <div class="half" style="width: 60%;">
+      <b>Hand-over-Hand:</b> better parallelism ✅
+      <pre data-id="impcode"><code data-trim>
+        table.Lock()            // table: unlocked -> locked
+        val row = table.locateRow(...)
+        table.LockRow(row)      // row:   unlocked -> locked
+        table.Unlock()          // table: locked -> unlocked
+        val result = computeOnRow(row)
+        row.Unlock()            // row:   locked -> unlocked
+      </code></pre>
+    </div>
+    <div class="my-mermaid half" style="margin: 0 -5%; vertical-align: bottom;">
+    sequenceDiagram
+        actor Program
+        participant Table@{ type: database }
+        participant Row@{ type: database }
+        rect rgb(220, 220, 255)
+        Program ->> Table:
+        end
+        rect rgb(255, 220, 220)
+        Program ->> Row:
+        rect rgb(220, 220, 255)
+        Program --x Table:
+        end
+        note over Row: compute
+        Program --x Row:
+        end
+    </div>
+  </div>
+  </div>
+  <aside class="notes">
+    The classic example is locking.
+    Languages like Java offer implicit lock management tied to lexical scopes.
+    That's simple to use, but lock lifetimes are then forced to nest, so you
+    cannot release the table while still working on a row. <br>
+    In contrast, by using Lock and Unlock methods directly, imperative code
+    allows us to unlock the table *as soon as* we lock the row —
+    that's hand-over-hand locking, which offers better parallelism. <br>
+    By typestate tracking on locks, we can further statically ensure that
+    we never use resources without locking them.
+  </aside>
+</section>
+
+
+<section>
+  <h2>Example (2): Well-formed DOM Trees</h2>
+  Tracking lists of open tags = <em>context-free grammar</em> (CFG)
+  <div>
+      <pre><code data-trim>
+        makeDOM { dom =>
+          dom.open(DIV())         // dom: [] -> [DIV]
+          // adding text... 
+
+          // !!Error:!! [DIV] got, [..., P] expected
+          dom.close(P())
+
+          // Ok
+          dom.close(DIV())        // dom: [DIV] -> []
+
+          // !!Error:!! [] got, [..., DIV] expected
+          dom.close(DIV())
+        }
+      </code></pre>
+  </div>
+  <aside class="notes">
+    The next example is about building DOM trees; a tree is well-formed only
+    when all tags are properly nested.
+    The state we track is no longer a simple flag, but the entire stack of
+    currently-open tags.
+    Here, we demonstrate the checker catching two possible errors: closing a tag
+    that doesn't match, and closing when no tag is open at all.
+    The key bit here is that: typestate is not limited to a finite set of named
+    states; it can track structured states like a stack, and use it to enforce
+    grammar-shaped invariants, entirely at compile time.
+  </aside>
+</section>
+
+
+<section>
+  <h2>Example (3): Server/Client Communication</h2>
+  Tracking channel protocols throughout recursion, branching...
+  <div>
+    <pre><code data-trim>
+      // server: prints text from client until client quits
+      def echoServer(chan: Chan): ... =
+          chan.RecPush()                   // chan: Rec[Recv[…]]           -> Recv[String,…]
+
+          def recur(chan: Chan): ... = 
+              println(chan.Recv())         // chan: Recv[String,Branch[…]] -> Branch[Var[0],End]
+              chan.Branch {
+                  chan.RecTop()            // chan: Var[0]                 -> Recv[String, …]
+                  recur(chan)              // chan: Recv[String, …]        -> End
+              } {
+                  chan.Close()             // chan: End
+              }
+
+          recur(chan)                      // chan: Recv[String, …]        -> End
+      
+      // client: repeatedly sends text until quitting
+      def echoClient(chan: Chan) = ...     // (dual of echoServer)
+    </code></pre>
+  </div>
+  </div>
+  <aside class="notes">
+    Our last example is about communication protocols, or session types.
+    The two ends of a channel must follow a protocol, a predefined sequence of
+    sends and receives, and crucially, that protocol keeps evolving as the
+    program progresses.
+    In our example, the server keeps receiving strings until the client
+    decides to quit, and only then closes the channel.
+    Don't worry about the exact state transitions here; but the point is that
+    we must track the channel's state statically even through recursion
+    and branching.
+  </aside>
+</section>
+
+</section>
+
+
+<section>
+
+<section>
+  <div class="toc" data-focus="how-to">
+    <blockquote>Revocable capabilities for general typestate</blockquote>
+  </div>
+  <aside class="notes">
+    So we've just seen three quite different examples — locks, documents,
+    protocols.  In this work, we try to provide a single mechanism that covers
+    all of them: revocable capabilities.  Let me walk you through how it works.
+  </aside>
+</section>
+
+
+<section>
+  <h2>A Simpler Example: File I/O</h2>
+  <p> <em>Requirement:</em> Read/Write only when the file is open!  </p>
+  <div>
+  <div class="half fragment semi-fade-out" data-fragment-index="1">
+    <h4>Direct APIs / Typestate</h4>
+    <pre><code data-trim class="language-rt">
+      val f = NewFile("a.txt")
+      Open(f, "w")
+      Write(f, "Hello")
+      Close(f)
+    </code></pre>
+    <div class="smaller">
+    <ul style="color: gray; margin-bottom: 1em;">
+      <li>early approaches by <em>global analysis</em></li>
+      <li>typestate oriented programming in <em>Plaid</em></li>
+      <li><em>session types</em> for communication protocols</li>
+      <li>...</li>
+    </ul>
+    Specialized language/domain <br>
+    Constraining aliasing: linear types, frac perms...
+    </div>
+  </div>
+  <div class="half fragment fade-in-semi-out" data-fragment-index="1">
+    <h4>Scoped Combinators / Capabilities</h4>
+    <pre><code data-trim class="language-rt">
+      WithFile("a.txt", "w") { f =>
+          // Key: f doesn't outlive the scope
+          Write(f, "Hello")
+      }
+    </code></pre>
+    <div class="smaller">
+    <ul style="color: gray; margin-bottom: 1em;">
+      <li>2nd-class Values</li>
+      <li>Reachability Types (RT)</li>
+      <li>Scala Capturing Checking (CC)</li>
+      <li>...</li>
+    </ul> <br>
+    Typestate in more general settings?
+    </div>
+  </div>
+  </div>
+  <aside class="notes">
+    <p>
+    As our running example, you may only read or write a file while it's open.
+    There are really two ways to write such code. First, the direct
+    style — you just call Open, Write, and Close as you go. To make that safe,
+    you need full typestate, and people have explored this for a long time, from
+    early whole-program analyses, to typestate-oriented languages like Plaid,
+    and session types.  But the existing solutions tend to come at a price —
+    they're tied to specialized languages or specialized domains, or they impose
+    restrictions on aliasing, using mechanisms like linear types and fractional
+    permissions.
+    </p>
+
+    <p>
+    Alternatively, in the scoped style — you wrap the file in a WithFile block,
+    and now the only thing you need for safety is that the capability f
+    doesn't escape that scope.  That's a much lighter requirement, and several
+    proposals have been made recently — second-class values, Reachability Types,
+    and Scala's Capturing Checking — the last of which is already running inside
+    a mainstream language. So the natural question is: can this lightweight,
+    capability-based path be generalized to express full typestate?
+    </p>
+  </aside>
+</section>
+
+
+<section>
+  <h2>This Work: Typestate Programming in Scala</h2>
+  Bring scoped <em>capabilities</em> into flow-sensitive <em>typestate</em> reasoning
+  <pre><code data-trim>
+    def Open(f: File): f.IsClosed ?=!>? f.IsOpen = ...
+  </code></pre>
+  <div class="my-mermaid">
+    graph TB
+      starr["`f.IsClosed ?=!>? f.IsOpen`"]
+      starr --> a
+      starr --> b
+      starr --> c
+      subgraph a ["`? _receives_ f.IsClosed`"]
+        a1(existing\nScala implicits)
+      end
+      subgraph b ["`! _revokes_ f.IsClosed`"]
+        b1(destructive effects\non RT/CC)
+      end
+      subgraph c ["`? _returns_ f.IsOpen`"]
+        c1(NEW: implicit return\nvia ANF transform)
+      end
+      classDef NoBrod stroke:#ffffff
+      class a1,b1,c1 NoBrod
+  </div>
+  <aside class="notes">
+    Our answer is yes — without inventing a whole new type system for Scala,
+    we can describe stateful methods like Open using a single 
+    signature, where that funny arrow in the middle explains the process.
+    Reading it left to right, it does three things:
+    it receives the closed-state capability, revokes it to stop further use, and
+    returns the new open-state capability.
+    Our receiving simply reuses Scala's implicits; revoking requires an effect
+    system that builds on Reachability Types and Capturing Checking;
+    returning a capability is our new extensions and is implemented via a simple
+    transformation.
+  </aside>
+</section>
+
+
+<section>
+  <h2>The Very First Step</h2>
+  Use different types for different states:
+  <pre><code data-trim>
+    class OpenFile: ...
+    class ClosedFile: ...
+
+    def NewFile(name: String):  ClosedFile = ...
+    def Open   (f: ClosedFile): OpenFile   = ...    //: ClosedFile -> OpenFile 
+    def Close  (f: OpenFile):   ClosedFile = ...    //: OpenFile -> ClosedFile
+
+    def Read (f: OpenFile): String         = ...
+    def Write(f: OpenFile, text: String): Unit = ...
+  </code></pre>
+  Benefit: <code class="smaller hljs-title">Write</code>
+  only happens on <code class="smaller hljs-type">OpenFile</code>
+  <pre><code data-trim>
+    val fNew = NewFile("a.txt")
+    val fOpen = Open(fNew)
+    Write(fOpen, "Hello")                           // Good: on OpenFile
+    val fClosed = Close(fOpen)
+  </code></pre>
+  <aside class="notes">
+    To see why this setup is necessary, let's build it up naively first.
+    The simplest encoding is just to use different types for different states:
+    an OpenFile and a ClosedFile as distinct classes.
+    A NewFile is always Closed; Open converts that to an OpenFile; and Close
+    goes the other way. Crucially, Read and Write require an OpenFile.
+    So already, the type checker guarantees you can only Write to an OpenFile.
+  </aside>
+</section>
+
+
+<section>
+  <h2>The Very First Step (2)</h2>
+  <div>
+  <div class="third">
+    Outdated Capabilities
+    <pre><code data-trim>
+      val fClosed = Close(fOpen)
+      // Write on !!stale!! fOpen
+      Write(fOpen, "Hello")
+    </code></pre>
+  </div>
+  <div class="third">
+    Unclear Target
+    <pre><code data-trim>
+      val fA = NewFile("a.txt")
+      val fB = NewFile("b.txt")
+      val fOpen = Open(fA)
+      // !!unintended!! to a.txt
+      Write(fOpen, "I'm b.txt")
+    </code></pre>
+  </div>
+  <div class="third">
+    Poor Ergonomics
+    <pre><code data-trim>
+      val cA0 = NewFile("a.txt")
+      val cB0 = NewFile("b.txt")
+      val oA1 = Open(cA0)
+      Write(oA1, "I'm a.txt")
+      val cA2 = Close(oA1)
+      val oB1 = Open(cB0)
+      Write(oB1, "I'm b.txt")
+      val cB2 = Close(oB1)
+    </code></pre>
+  </div>
+  </div>
+  <div style="font-size: smaller; margin-top: 3%; text-align: center;">
+    <div class="third"><b>Pillar 1.</b><br>
+      Flow-Sensitive Revocation <br>
+      "<code class="smaller">?=<span style="color: red;">!</span>&gt;?</code>"
+    </div>
+    <div class="third"><b>Pillar 2.</b><br>
+      Path-Dependent Capabilities <br>
+      "<code class="smaller"><span style="color: red;">f.</span>IsOpen</code>",
+      "<code class="smaller"><span style="color: red;">f.</span>IsClosed</code>"
+    </div>
+    <div class="third"><b>Pillar 3.</b><br>
+      Flow-Sensitive Implicits <br>
+      "<code class="smaller"><span style="color: red;">?</span>=!&gt;<span style="color: red;">?</span></code>"
+    <div>
+  </div>
+  <aside class="notes">
+    This naive version already gets us a lot, but it has three serious problems.
+    First, after Close gives you a fresh ClosedFile, the old fOpen handle is
+    stale — but nothing stops you from writing to it.
+    Second, if you open file A, the resulting OpenFile doesn't actually remember
+    it's A, so you might accidentally write content meant for B into A.
+    Third, because every operation returns a new handle, you're forced to thread
+    a chain of freshly-named variables through your whole program.
+    These three pain points motivate our three pillars: flow-sensitive
+    revocation kills stale handles, path-dependent capabilities tie a capability
+    to its object, and flow-sensitive implicits remove the naming burden.
+    We detail these pillars in the next couple of slides.
+  </aside>
+</section>
+
+
+<section>
+  <h2>Pillar 1: Flow-Sensitive Revocation</h2>
+  <div class="fragment semi-fade-out" data-fragment-index="1">
+  Ensure outdated capabilities (by <code class="smaller hljs-meta">@kill</code>) are no longer used:
+  <pre><code data-trim>
+    def Close(f: OpenFile^): ClosedFile^ @kill(f) = ...  //: OpenFile^ =!> ClosedFile^
+
+    val fClosed = Close(fOpen)    // ??{ fOpen }?? marked as killed
+    Write(fOpen, "Hello")         // !!Error:!! using killed fOpen
+  </code></pre>
+  </div>
+
+  <div class="fragment" data-fragment-index="1">
+    <div class="half" style="width: 74%;">
+    <b>Key:</b> disjoint use & kill under <em>descriptive alias tracking</em>
+    <ul class="smaller">
+      <li>
+        <em>track</em> sharing <em>by names</em>, pose minimum restrictions</li>
+      <li> Reachability Types (RT): destructive effects proven sound <span class="cite">[1]</span></li>
+      <li> Capturing Types: experimental checker (CC) in Scala compiler</li>
+    </ul>
+    <pre><code data-trim>
+      val fA = Open(NewFile("a.txt"))
+      val fB = Open(NewFile("b.txt"))
+      val fC = if (...) fA else fB    // fC: OpenFile??~{fA,fB}??
+      Close(fA)
+      Write(fC, "maybe to a.txt")     // !!Error:!! using killed fA
+    </code></pre>
+    </div>
+    <div class="half my-mermaid" style="width: 24%;">
+      graph BT
+        subgraph overlap
+          fA
+        end
+        fC((fC)) -.-> fA((fA)) & fB((fB))
+        Close(Close) -->|kill| fA
+        Write(Write) -->|use| fC
+        style fA stroke:#f00
+    </div>
+  </div>
+  <div class="refs fragment" data-fragment-index="1">
+    [1] Deng et al. 2025. Free to Move: Reachability Types
+    with Flow-Sensitive Effects for Safe Deallocation and Ownership Transfer. Tech Report.
+  </div>
+  <aside class="notes">
+    <p>
+    Pillar one: flow-sensitive revocation. We annotate Close with a kill effect
+    on f, meaning the argument f is consumed.  After calling Close fOpen, any
+    later use of fOpen is flagged as using a killed capability — that fixes the
+    stale-handle problem.
+    </p>
+    <p>
+    The interesting part is doing this under aliasing. We use what we call
+    descriptive alias tracking: we track sharing by names, so we impose only the
+    minimum restriction.
+    Such mechanisms include Reachability Types and Capturing Types, where
+    destructive effects are proven sound in the context of RT, and we build our
+    revocation based on the experimental CT checker in Scala.
+    The example below demonstrates such tracking: fC may alias either fA or fB.
+    When we Close fA, the checker knows fC could reach the killed fA, so writing
+    through fC is correctly rejected.
+    </p>
+  </aside>
+</section>
+
+
+<section>
+  <h2>Pillar 2: Path-Dependent Capabilities</h2>
+  Disentangle capabilities as <em>abstract type members</em> of objects:
+  <pre><code data-trim>
+    class File:
+        type IsClosed   // abstract type members
+        type IsOpen
+  </code></pre>
+  Use <em>path-dependent types</em> (DOT) to relate the capability <code>c</code>
+  to the object <code>f</code>:
+  <pre><code data-trim>
+    def Open(f: File, c: f.IsClosed^): f.IsOpen^ @kill(c) = ...
+
+    Open(f, c)        // separate obj and cap, kill only the cap
+  </code></pre>
+
+  <p style="margin-top: 5%; font-style: italic;">
+    unaffected by kill effects; &nbsp; guaranteed relation to objects</p>
+
+  <aside class="notes">
+    Pillar two: path-dependent capabilities.
+    Instead of using different types for different states, we make capabilities
+    abstract type members of File objects: every File has its own IsClosed
+    and IsOpen types.
+    Then, using path-dependent types from DOT — the calculus underlying Scala —
+    a capability of type f.IsClosed is provably about the file f and no other.
+    So Open takes the object f and separately the IsClosed capability c
+    specific to f, and then kills only the capability, not the object.
+    This path-dependency is immune to kill effects from pillar one, and it
+    gives us a guaranteed link between a capability and the object it governs —
+    so a write does not silently go to the wrong file.
+  </aside>
+</section>
+
+
+<section>
+  <h2>Pillar 3: Flow-Sensitive Implicits</h2>
+  <div>
+  <em>Existing Scala feature</em> for receiving capabilities, implicitly:
+  <pre><code data-trim>
+    def Open(f: File)(using c: f.IsClosed^) = ...  // f.IsClosed^ ?=!> f.IsOpen^
+
+    Open(f)                                        // implicitly using nearest f.IsClosed
+  </code></pre>
+  </div>
+  <div style="margin-top: 4%;">
+  <em>New extension</em>: returning capabilities implicitly via ANF transformation
+  <pre><code data-trim>
+    // bundle data & capability as dependent pair: Sigma
+    def NewFile(name: String): Sigma { type A = File; type B = a.IsClosed^ } = ...
+
+    val f = NewFile("...")   // non-tail Sigma ==> (1) .a as f; (2) .b as implicit cap
+    Open(f)                  //                   (3) continue on
+  </code></pre>
+  </div>
+  <aside class="notes">
+    Pillar three: flow-sensitive implicits — this improves ergonomics. Half of
+    it is already in Scala: instead of passing the capability by hand, we mark
+    it with "using" so the compiler finds the nearest implicit candidate, and
+    you just write Open f.
+    The new half that makes implicits really flow-sensitive is their returning.
+    The trick here is that: when a function returns both the data and a
+    capability as a dependent pair, or Sigma,
+    our ANF transformation kicks in and extracts the second component as an
+    implicit candidate for the rest of the block.
+    So after assigning the result of NewFile to f, the IsClosed capability is
+    silently available, and the next Open just picks it up.
+    No more threading chains of renamed variables — the program reads like
+    ordinary imperative code.
+  </aside>
+</section>
+
+
+<section>
+  <h2>3-in-1 Expressiveness!</h2>
+  <div>
+    <div class="half">
+      File Operations
+      <pre><code data-trim>
+      val f = NewFile("a.txt")  // f.IsClosed
+      Open(f)             // f: IsClosed -> IsOpen
+      Write(f, "Hello")   // using f.IsOpen
+      Close(f)            // f: IsOpen -> IsClosed
+      </code></pre>
+    </div>
+    <div class="half">
+      Hand-over-Hand Locks
+      <pre><code data-trim>
+      table.Lock()            // table: 🔓 -> 🔒
+      val row = table.locateRow(...)
+      table.LockRow(row)      // row:   🔓 -> 🔒
+      table.Unlock()          // table: 🔒 -> 🔓
+      val result = computeOnRow(row)
+      row.Unlock()            // row:   🔒 -> 🔓
+      </code></pre>
+    </div>
+  </div>
+  <div>
+    <div class="half">
+      DOM Tree by CFG
+      <pre><code data-trim>
+      makeDOM { dom =>
+        dom.open(DIV())   // dom: [] -> [DIV]
+        dom.open(P())     // dom: [DIV] -> [DIV,P]
+
+        // adding text... 
+
+        dom.close(P())    // dom: [DIV,P] -> [DIV]
+        dom.close(DIV())  // dom: [DIV] -> []
+      }
+      </code></pre>
+    </div>
+    <div class="half">
+      Binary Session Types
+      <pre><code data-trim>
+      def echoServer(chan: Chan): ... =
+          chan.RecPush()
+
+          def recur(chan: Chan): ... = 
+              println(chan.Recv())
+              chan.Branch
+                { chan.RecTop(); recur(chan) }
+                { chan.Close() }
+
+          recur(chan)
+      </code></pre>
+    </div>
+  </div>
+  <aside class="notes">
+    Putting the three pillars together, here's the payoff: we support all
+    our motivating examples with the same mechanism, implemented in Scala.
+    The file operations now read top-to-bottom on a single variable f.
+    The same mechanism handles hand-over-hand locks, building well-formed DOM
+    trees, and binary session types where recursion and branching exist.
+  </aside>
+</section>
+
+</section>
+
+
+<section>
+
+<section>
+  <div class="toc" data-focus="showcase">
+    <blockquote>Control Flow, Performance</blockquote>
+  </div>
+  <aside class="notes">
+    Now the benefits — what this buys us in real control flow, and what it costs.
+  </aside>
+</section>
+
+
+<section>
+  <h2>Control Flow: Non-forking Usage</h2>
+  Using capabilities need no special handling at all:
+  <pre><code data-trim>
+    val f = NewFile("a.txt")
+    Open(f)
+    for (ln <- text)
+        Write(f, ln)   // using f.IsOpen in a loop
+    Close(f)
+  </code></pre>
+  <div style="margin-top: 5%;">
+  Ordinary <code class="hljs-keyword smaller">if</code> for branching
+  that lands in the same state
+  <pre><code data-trim>
+  // from echoClient.recur: chan.PCap[...] ?=!> Unit
+  if (readLine() == …) then
+      chan.Left(); chan.RecTop()
+      recur(chan)
+  else
+      chan.Right(); chan.Close()
+  </code></pre>
+  </div>
+  <aside class="notes">
+    First, the easy case is when control flow *doesn't* fork the ending state.
+    Using a capability repeatedly needs no special treatment at all — here we
+    Write to f inside an ordinary for-loop, where each iteration leaves the
+    state unchanged.
+    Likewise, a plain if-then-else is fine as long as both branches land in the
+    *same* state. In this session-types snippet, both the `then` and `else`
+    branches fully execute the protocol and close the channel, so we just use a
+    normal if.
+    The takeaway is: a lot of real code needs zero extra work.
+  </aside>
+</section>
+
+
+<section>
+  <h2>Control Flow: Forking & Joining States</h2>
+  <div class="fragment semi-fade-out" data-fragment-index="1">
+    <div class="half">
+    Forking states into <code class="smaller hljs-type">Either</code>:
+    <pre><code data-trim>
+      //: f.IsClosed ?=!>?
+      //  Either[f.IsOpen, f.IsClosed]
+      if_[..., ..., ...] (...)
+      /* then */ {
+          Open(f)
+      } /* else */ {
+          Open(f); Close(f)
+      }
+    </code></pre>
+    </div>
+    <div class="half">
+    Joining by inspecting <code class="smaller hljs-type">Either</code> values:
+    <pre><code data-trim>
+      //: Either[f.IsOpen, f.IsClosed] ?=!>?
+      //  f.IsClosed
+      match_[..., ..., ...]
+      { // case f.IsOpen =>
+          println("Now closing."); Close(f)
+      }{// case f.IsClosed =>
+          println("Already closed.")
+      }
+    </code></pre>
+    </div>
+  </div>
+  <div style="margin-top: 5%;" class="fragment" data-fragment-index="1">
+  Combining them: loop guarded by state transition
+  <pre><code data-trim>
+    // iterate it until no more element
+    while_[it.HasMore, it.End] {
+        //: it.HasMore ?=!> (Either[it.HasMore, it.End] ?<= T)
+        val item = it.nextChecked()
+        ...
+    }
+  </code></pre>
+  </div>
+  <aside class="notes">
+    <p>
+    The harder case is when branches end in *different* states. We handle this
+    by reifying the choice as Either capabilities, and we offer combinators
+    to work with them.
+    Our if-combinator runs one branch that leaves the file open and another that
+    leaves it closed, and its result is Either of IsOpen and IsClosed — the
+    state becomes data.
+    Joining is the dual: a match-combinator inspects that Either, and in each
+    case the capability is recovered with the right state, so both cases can
+    converge — here, back to closed.
+    </p>
+
+    <p>
+    Combining fork and join gives us state-dependent loops: the while-combinator
+    keeps iterating until the ending state is reached.
+    So even non-trivial control flow stays expressible and checked.
+    </p>
+  </aside>
+</section>
+
+
+<section>
+  <h2>Performance: DOM Examples</h2>
+  The cost of CC/Effects is comparable to Typing/Others of the compiler:
+  <div style="margin-top: 1%;">
+    <div class="half">
+    <figure>
+    <canvas id="perf1" style="width: 100%;"></canvas>
+    <figcaption class="smaller"> Ablation: depth=17 </figcaption>
+    </figure>
+    </div>
+    <div class="half">
+    <figure>
+    <canvas id="perf2" style="width: 100%;"></canvas>
+    <figcaption class="smaller"> Scaling: depths 17~33 </figcaption>
+    </figure>
+    </div>
+  </div>
+  <script>
+    window.charts.perf2 = {
+      type: 'bar',
+      data: {
+        labels: ['depth=17', 'depth=25', 'depth=33'],
+        datasets: [
+          {
+            label: 'Typing',
+            data: [795.26, 866.98, 919.60]
+          },
+          {
+            label: 'CC',
+            data: [535.88, 806.25, 1174.76]
+          },
+          {
+            label: 'Effects',
+            data: [364.00, 832.79, 1795.88]
+          },
+          {
+            label: 'Others',
+            data: [801.42, 928.27, 1102.06]
+          },
+        ]
+      },
+      options: {
+        aspectRatio: 1,
+        scales: {
+          x: { stacked: true },
+          y: { stacked: true },
+        }
+      }
+    }
+    window.charts.perf1 = {
+      type: 'bar',
+      data: {
+        labels: ['No Cap', 'Cap Only', 'Full TS'],
+        datasets: [
+          {
+            label: 'Typing',
+            data: [275.20, 499.78, 795.26]
+          },
+          {
+            label: 'CC',
+            data: [0, 0, 535.88]
+          },
+          {
+            label: 'Effects',
+            data: [0, 0, 364.00]
+          },
+          {
+            label: 'Others',
+            data: [492.64, 558.73, 801.42]
+          },
+        ]
+      },
+      options: {
+        aspectRatio: 1,
+        scales: {
+          x: { stacked: true },
+          y: {
+            stacked: true,
+            title: {
+              display: true,
+              text: 'avg. time (ms)'
+            },
+            max: 5000
+          }
+        }
+      }
+    }
+  </script>
+  <aside class="notes">
+    What does it cost? We measured on the DOM tree examples, and the key message
+    is: the overhead of capturing checking and our effects is comparable to the
+    compiler's other phases — it's not a blow-up.
+    On the left, the ablation at fixed depth shows that CC and effects
+    contributing a reasonable slice over the baseline.
+    On the right, scaling from depth 17 up to 33, the effects phase grows but
+    stays in the same ballpark as typing and the rest.
+    So the approach is not only clean, but also practical.
+  </aside>
+</section>
+
+</section>
+
+
+<section>
+
+<section>
+  <h2>Conclusion: Typestate for Scala (and more)</h2>
+  <p>Safe stateful programming by <em>receiving, revoking,</em> and <em>returning</em> capabilities <br>
+  ergonomic control flow use, minimum aliasing restriction</p>
+  <p><b>Three Pillars:</b>
+    destructive effects (RT/CC), path-dependent capabilities, <br>
+    <b style="color: white;">Three Pillars:</b> and
+    implicit return values <span class="newtag">new!</span> </p>
+  <p><b>Case Studies:</b> files, locks, DOM, session types, control flow</p>
+  <div class="my-mermaid" style="width: 80%; margin-left: 8%;">
+    graph TB
+      starr["f.IsClosed ?=!>? f.IsOpen"]
+      starr --> a
+      starr --> b
+      starr --> c
+      subgraph a ["`? _receives_ f.IsClosed`"]
+      end
+      subgraph b ["`! _revokes_ f.IsClosed`"]
+      end
+      subgraph c ["`? _returns_ f.IsOpen`"]
+      end
+      classDef NoBrod stroke:#ffffff
+      class a1,b1,c1 NoBrod
+  </div>
+  <div class="refs" style="margin-left: 60%; width: 100%;">
+    <img src="assets/artifacts_available_dl.jpg" width="10%">
+    <img src="assets/artifacts_evaluated_functional_dl.jpg" width="10%">
+    <img src="assets/artifacts_evaluated_reusable_dl.jpg" width="10%">
+  </div>
+  <aside class="notes">
+    To wrap up. We bring typestate to Scala — and to general settings — by
+    treating stateful programming as *receiving, revoking, and returning*
+    capabilities. 
+    We get ergonomic control flow and impose only minimal aliasing restrictions.
+    Our three pillars include: destructive effects for revocation,
+    path-dependent capabilities for tying state to objects, and — the new
+    ingredient — implicit return values via ANF.
+    We validated it on files, locks, DOM trees, session types, and control flow combinators, and our artifact is available online.
+    Thanks very much — I'm happy to take questions.
+  </aside>
+</section>
+
+
+<section data-visibility="hidden">
+  <h2>Error Reporting</h2>
+</section>
+
+
+<section data-visibility="hidden">
+  <h2>Limitations</h2>
+</section>
+
+</section>

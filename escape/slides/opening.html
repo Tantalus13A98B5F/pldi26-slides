@@ -1,0 +1,789 @@
+<section>
+  <h1 style="margin-top: 15%;">Escape with Your Self:</h1>
+  <h2>Sound and Expressive Bidirectional Typing with Avoidance for Reachability Types</h2>
+  <u>Songlin Jia</u><sup style="color: gray;">1</sup>,
+  Guannan Wei<sup style="color: gray;">2</sup>,
+  Siyuan He<sup style="color: gray;">1</sup>,
+  Yuyan Bao<sup style="color: gray;">3</sup>,
+  Tiark Rompf<sup style="color: gray;">1</sup> <br>
+  <em>Fri 19 Jun @ PLDI 2026</em>
+
+  <div class="refs" style="font-size: 100%; width: 100%;">
+    <img src="assets/PU-V-Full-RGB.svg" height="180em">
+    <img src="assets/purpl-banner.jpg" height="180em">
+    <sup style="vertical-align: top;">1</sup>
+    <div style="display: inline-block; width: 27%;"></div>
+    <img src="assets/tufts-combined.png" height="180em">
+    <sup style="vertical-align: top;">2</sup>
+    <img src="assets/augusta-logo.png" height="180em">
+    <sup style="vertical-align: top;">3</sup>
+  </div>
+</section>
+
+
+<section>
+  <h2>Reachability Types: Resources by Names</h2>
+  <p style="color: gray; margin-top: -3%;">
+    <em>tracking</em> instead of <em>restricting</em>;
+    beyond <em>shared XOR mutable</em> in Rust!
+  </p>
+  <div style="width: 72%; display: inline-block; vertical-align: top;">
+  Track sharing<code class="hl2">??~{c}??</code> in impure, functional settings:
+  <pre><code data-trim>
+  let Counter = fun (n: Int~{~0}) =>
+      let c = ref n                     //: Ref[Int~{~0}]??~{c}??
+      let incr = fun () => c := !c+1    //: (Unit~{~0} -> Unit~{~0})??~{c}??
+      let decr = fun () => c := !c-1    //: (Unit~{~0} -> Unit~{~0})??~{c}??
+      (incr, decr)
+  </code></pre>
+  <div class="fragment">
+  Tracking persists on <em>escaping</em> data<code class="hl2">??~{ctr}??</code>:
+  <pre><code data-trim>
+  let ctr = Counter(42)
+  let incr = fst(ctr)                   //: (Unit~{~0} -> Unit~{~0})??~{ctr}??
+  let decr = snd(ctr)                   //: (Unit~{~0} -> Unit~{~0})??~{ctr}??
+  </code></pre>
+  </div>
+  <div class="fragment">
+  On demand, functions request <em>disjoint</em> parameters<code class="hl2">??~{~*}??</code>:
+  <pre><code data-trim>
+  //Parallel: (Unit -> Unit)??~{~*}?? -> (Unit -> Unit)??~{~*}?? -> Unit
+  Parallel(incr)(decr)                  // !!Error:!! bad overlap
+  </code></pre>
+  </div>
+  </div>
+  <div class="my-mermaid" style="width: 25%; display: inline-block;">
+    graph BT
+      subgraph ctr ["ctr: Counter()"]
+        direction BT
+        incr([incr]) --> c((c))
+        decr([decr]) --> c
+        style c stroke:red
+      end
+      incr2([incr]) -->|"fst"| ctr
+      decr2([decr]) -->|"snd"| ctr
+      par["`_safe_ Parallel()`"] --> incr2 & decr2
+  </div>
+  <p>
+    <b>This Work:</b> <em>declarative</em> calculus $\Longrightarrow$ sound & expressive <em>algorithm</em>
+  </p>
+</section>
+
+
+<section>
+  <h2>Algorithmic Challenges: Names are not Enough</h2>
+  <div>
+  <b>Avoidance:</b> Old names are ill-scoped, need avoiding
+  <pre><code data-trim>
+  let y = {
+      let x = ref 42
+      x    //: Ref[Int]??~{x}??
+  }        //: Ref[Int]!!~{???}!! without mentioning undefined x
+  </code></pre>
+  </div>
+  <div style="margin-top: 5%;">
+  <b>Polymorphism:</b> Result qualifiers depend on arguments, need replacing
+  <pre><code data-trim>
+  let id = fun (z: Ref[Int]??~{~*}??) => z    //: (z: Ref[Int]??~{~*}??) -> Ref[Int]??~{z}??
+
+  let x = ref 42; id(x)               //: Ref[Int]??~{z}?? [z |-> !!???!!]
+  let y = ref 42; id(y)               //: Ref[Int]??~{z}?? [z |-> !!???!!]
+  id(ref 42)                          //: Ref[Int]??~{z}?? [z |-> !!???!!]
+  </code></pre>
+  </div>
+</section>
+
+
+<section>
+  <h2>Algorithmic Challenge (1): Avoidance</h2>
+  <div style="opacity: .5;">
+  <b>Avoidance:</b> Old names are ill-scoped, need avoiding
+  <pre><code data-trim>
+  let y = {
+      let x = ref 42
+      x    //: Ref[Int]??~{x}??
+  }        //: Ref[Int]!!~{???}!! without mentioning undefined x
+  </code></pre>
+  </div>
+  <div>
+  <p>
+  <em>The avoidance problem:</em> dependently typed, but no
+  evaluation in types <br>
+  <span style="font-size: smaller;">
+    e.g., bounded existential types, dependent object types (DOT), ML modules...</span>
+  </p>
+  <pre><code data-trim class="language-ocaml">
+  (* signature avoidance in OCaml [1] *)
+  module Map (T: Comparable) (K: Keys with type t := T.t) = ... end
+  module T = struct type t = ... let eq = ... end
+
+  (* Okay, but details of K become accessible *)
+  module K = struct type t = ... let getKey = ... end
+  module M = Map(T)(K)
+  
+  (* !!Error:!! The parameter cannot be eliminated in the result type. *)
+  module M = Map(T)(struct type t = ... type getKey = ... end)
+  </code></pre>
+  <p class="refs">
+    [1] Blaudeau, Rémy, and Radanne. POPL'25. Avoiding Signature Avoidance in ML Modules with Zippers.
+  </p>
+  </div>
+</section>
+
+
+<section>
+  <h2>Simple, Top-level Avoidance</h2>
+  Replace ill-scoped variables with their upstream reachability:
+  <pre><code data-trim>
+      let y = {
+          let x = ref 42
+          x    //: Ref[Int]??~{x}?? in [x: Ref[Int]??~{~*}??]
+      }        //: Ref[Int]!!~{~*}!! by [x |-> ~*]
+  </code></pre>
+  The freshness marker <code class="hl2">??~*??</code> represents a <em>distinct, unnamed</em> resource
+  <div class="my-mermaid" style="width: 40%;">
+    graph RL
+      y((y)) -.-> x((x)) -.-> f((♦))
+      y --> f
+      style x stroke-dasharray: 3 7
+  </div>
+</section>
+
+
+<section>
+  <h2>Avoidance on Escaping Data Types</h2>
+  As <code class="hl2">??~*??</code> marks distinct resources,
+  naive replacement mistakenly <em>changes</em> meanings:
+  <pre><code data-trim>
+      let y = {
+          let x = ref 42
+          (x, x)    //: Pair[Ref[Int]??~{x}??, Ref[Int]??~{x}??]??~{x}??
+      }             //: Pair[Ref[Int]!!~{~*}!!, Ref[Int]!!~{~*}!!]!!~{~*}!! by naively [x |-> ~*]?
+  </code></pre>
+  <div>
+  <div class="half" style="font-size: smaller;">
+    <code class="hl2">Pair[Ref[Int]??~{x}??, Ref[Int]??~{x}??]??~{x}??</code>
+    <div class="my-mermaid" style="width: 60%;">
+    flowchart-elk BT
+      subgraph Pair
+        fst([fst])
+        snd([snd])
+      end
+      fst & snd & Pair --> x((x))
+    </div>
+  </div>
+  <div class="half" style="font-size: smaller;">
+    <code class="hl2">Pair[Ref[Int]??~{~*}??, Ref[Int]??~{~*}??]??~{~*}??</code>
+    <div class="my-mermaid" style="width: 70%; display: inline-block;">
+    flowchart-elk BT
+      subgraph Pair
+        fst([fst])
+        snd([snd])
+      end
+      fst --> x1((♦))
+      snd --> x2((♦))
+      Pair --> x3((♦))
+    </div>
+    <span>❌</span>
+  </div>
+  </div>
+</section>
+
+
+<section>
+  <h2>Avoidance on Escaping Data Types (2)</h2>
+  <b>Correct:</b> indirection via the <em>self-reference</em> <code class="hl2">??p??</code>
+  <span style="color: gray;"> ($\simeq$ <code>this</code> pointers in OOP) </span>
+  <pre><code data-trim>
+      let y = {
+          let x = ref 42
+          (x, x)    //:    Pair[Ref[Int]??~{x}??, Ref[Int]??~{x}??]??~{x}??
+      }             //: \u!!p!!.Pair[Ref[Int]!!~{p}!!, Ref[Int]!!~{p}!!]!!~{~*}!!
+  </code></pre>
+  <div>
+  <div class="half" style="font-size: smaller;">
+    <code class="hl2">Pair[Ref[Int]??~{x}??, Ref[Int]??~{x}??]??~{x}??</code>
+    <div class="my-mermaid" style="width: 60%;">
+    flowchart-elk BT
+      subgraph Pair
+        fst([fst])
+        snd([snd])
+      end
+      fst --> x((x))
+      snd --> x
+      Pair --> x
+    </div>
+  </div>
+  <div class="half" style="font-size: smaller;">
+    <code class="hl2">\u??p??.Pair[Ref[Int]??~{p}??, Ref[Int]??~{p}??]??~{~*}??</code>
+    <div class="my-mermaid" style="width: 56%; display: inline-block;">
+    flowchart-elk BT
+      subgraph Pair [" "]
+        p@{ shape: text, label: "μp.Pair" }
+        snd([snd]) & fst([fst]) --> p
+      end
+      p --> x3((♦))
+    </div>
+    <span>✅</span>
+  </div>
+  </div>
+</section>
+
+
+<section>
+  <h2>Track <u>Escap</u>ing Data <u>with</u> <u>Self</u>-References</h2>
+  <p>
+    e.g., &nbsp;
+      <code class="hl2">\u??p??.Pair[Ref[Int]??~{p}??, Ref[Int]??~{p}??]~{~*}</code> <br>
+    <span style="color: gray;">
+    <code class="hl2">??p??</code> for the <em>whole</em> enclosing pair,
+    <em>over</em>-approximating components
+    </span>
+  </p>
+  <div style="margin-top: 4%;">
+    <b>Prior Works:</b> incompatible types before/after escaping
+    <ol style="color: gray;">
+      <li> term-level coercions for escaping</li>
+      <li> different, specialized eliminators</li>
+    </ol>
+    <pre><code data-trim data-line-numbers="5-7,9">
+      val pair = {
+        val a = new Ref(1)
+        val b = new Ref(2)
+        val pair = Pair[...](a, b)
+        // (1) η-expand Pair -> \up.OPair
+        OPair[...](fstT[...](pair),
+                   sndT[...](pair))  // (2a) sndT before escaping
+      }
+      val b = sndO[...](pair)        // (2b) sndO after escaping
+    </code></pre>
+  </div>
+</section>
+
+
+<section>
+  <h2>Track <u>Escap</u>ing Data <u>with</u> <u>Self</u>-References (2)</h2>
+  <p><b>This Work:</b> declarative + algorithm development</p>
+  <table>
+    <tr>
+      <td colspan="3" align="center" style="border: 0; padding-bottom: .5em;">
+        <b>Algorithm: <em>Polarity</em>-based Avoidance</b>
+        <pre style="width: 64%;"><code data-trim data-line-numbers="5,7">
+          let pair = {
+            let a = ref 1
+            let b = ref 2
+            val pair = Pair(a, b)
+            pair             // implicit conversion
+          }
+          val b = snd(pair)  // generic eliminator
+        </code></pre>
+      </td>
+    </tr>
+    <tr class="fragment">
+      <td colspan="3" align="center" style="border: 0; padding-bottom: .5em;">
+        <b>Spec: <em>Type-and-Qualifier</em> Subtyping</b>
+        $$ T^{\cao p} \leqslant: U^{\cao q} $$
+      </td>
+    </tr>
+    <tr class="fragment">
+      <td align="center">
+        <b><em>Covariant</em> Semantics</b>
+        $$ {\cao p} <: {\cao q} \implies
+          \bbrkt{\text{self of } T} \subseteq \bbrkt{\text{self of } U} $$
+      </td>
+      <td>&nbsp;</td>
+      <td align="center">
+        <b>Self-Refs in Types</b> <br>
+        <ul>
+          <li>all covariant positions
+            <sup style="line-height: 0;">(+)</sup></li>
+          <li>arbitrary argument reachability
+            <sup style="line-height: 0;">(-)</sup></li>
+        </ul>
+      </td>
+    </tr>
+  </table>
+</section>
+
+
+<section data-auto-animate>
+  <h2>Algorithmic Challenge (2): Polymorphism</h2>
+  <div style="margin-bottom: 4%;">
+  <b>Polymorphism:</b> Result qualifiers depend on arguments, need replacing
+  <pre><code data-trim>
+  let id = fun (z: Ref[Int]??~{~*}??) => z    //: (z: Ref[Int]??~{~*}??) -> Ref[Int]??~{z}??
+
+  let x = ref 42; id(x)               //: Ref[Int]~{z} [z |-> !!???!!]
+  let y = ref 42; id(y)               //: Ref[Int]~{z} [z |-> !!???!!]
+  id(ref 42)                          //: Ref[Int]~{z} [z |-> !!???!!]
+  </code></pre>
+  </div>
+  <b>Solution:</b> bidirectional typing that infers qualifiers from parameters
+  <div>
+    <div class="half">
+      <p style="font-size: smaller;">
+      Infers the type & qualifier:
+      </p>
+      $$t \tinfer \cao{T^q}$$
+    </div>
+    <div class="half">
+      <p style="font-size: smaller;">
+      Checks the type & qualifier:
+      </p>
+      $$t \tcheck {T^q}$$
+    </div>
+  </div>
+  <div>
+    <div class="half">
+      <p style="font-size: smaller;">
+      Checks the type, infers the qualifier:
+        <span class="newtag">NEW!</span>
+      </p>
+      $$t \tcheck T ^{\,\tinfer\,\cao{q}}$$
+    </div>
+    <div class="half">
+      <p style="font-size: smaller;">
+      Subtyping that infers super-qualifier:
+        <span class="newtag">NEW!</span>
+      </p>
+      $$ T^p \leqslant U^{\cao{q}} $$
+    </div>
+  </div>
+</section>
+
+
+<section data-auto-animate>
+  <h2>Bidirectional Typing with Qualifier Inference</h2>
+  <div style="opacity: .5;">
+    <div class="half">
+      <p style="font-size: smaller;">
+      Infers the type & qualifier:
+      </p>
+      $$t \tinfer \cao{T^q}$$
+    </div>
+    <div class="half">
+      <p style="font-size: smaller;">
+      Checks the type & qualifier:
+      </p>
+      $$t \tcheck {T^q}$$
+    </div>
+  </div>
+  <div>
+    <div class="half">
+      <p style="font-size: smaller;">
+      Checks the type, infers the qualifier:
+        <span class="newtag">NEW!</span>
+      </p>
+      $$t \tcheck T ^{\,\tinfer\,\cao{q}}$$
+    </div>
+    <div class="half" style="opacity: .5;">
+      <p style="font-size: smaller;">
+      Subtyping that infers super-qualifier:
+        <span class="newtag">NEW!</span>
+      </p>
+      $$ T^p \leqslant U^{\cao{q}} $$
+    </div>
+  </div>
+  <em>Polymorphism</em> by inferring
+  the parameter qualifier<sup style="color: gray;">(2)</sup> for
+  substitution<sup style="color: gray;">(3)</sup>:
+  <pre><code data-trim>
+  let id = fun (z: Ref[Int]??~{~*}??) => z      //(1)  id    ⇒ (z:Ref[Int]??~{~*}??) -> Ref[Int]??~{z}??
+  let x = ref 42                        //(2)     x  ⇐    Ref[Int] ⇒??~{ x}??
+  id(x)                                 //(3)  id(x) ⇒                 Ref[Int]??~{x}?? by [z |-> x]
+  </code></pre>
+  <div>
+  A <em>lightweight</em> alternative to <em>explicit</em> quantification & instantiation:
+  <pre><code data-trim>
+  let id = fun [T??~{q}??](z: Ref[Int]??~{q}??) => z   //: \A[T??~{q}??] (Ref[Int]??~{q}??) -> Ref[Int]??~{q}??
+  let x = ref 42; id[Top??~{x}??](x)            // Ok, but requires instantiating Top??~{x}??
+  </code></pre>
+  </div>
+</section>
+
+
+<section>
+  <h2>Bidirectional Typing with Qualifier Inference (2)</h2>
+  <div style="opacity: .5;">
+    <div class="half">
+      <p style="font-size: smaller;">
+      Infers the type & qualifier:
+      </p>
+      $$t \tinfer \cao{T^q}$$
+    </div>
+    <div class="half">
+      <p style="font-size: smaller;">
+      Checks the type & qualifier:
+      </p>
+      $$t \tcheck {T^q}$$
+    </div>
+  </div>
+  <div>
+    <div class="half" style="opacity: .5;">
+      <p style="font-size: smaller;">
+      Checks the type, infers the qualifier:
+        <span class="newtag">NEW!</span>
+      </p>
+      $$t \tcheck T ^{\,\tinfer\,\cao{q}}$$
+    </div>
+    <div class="half">
+      <p style="font-size: smaller;">
+      Subtyping that infers super-qualifier:
+        <span class="newtag">NEW!</span>
+      </p>
+      $$ T^p \leqslant U^{\cao{q}} $$
+    </div>
+  </div>
+  Interesting case again on <em>self-references</em>, where subtyping poses constraints:
+  <pre><code data-trim>
+    let pick = fun (p: \u??p??.Pair[Ref[Int]??~{p}??, Ref[Int]??~{p}??]??~{~*}??) =>
+        if ... then fst(p) else snd(p)
+    
+    let x = ref 42; let y = ref 42
+    pick((x, y))      // casting Pair[Ref[Int]??~{x}??, Ref[Int]??~{y}??]
+                      //   to \u??p??.Pair[Ref[Int]??~{p}??, Ref[Int]??~{p}??], constraints on ??p??
+  </code></pre>
+  <p>
+  <b>More in our paper:</b> unification for qualifiers,
+  inspired by <span class="cite">[2]</span>
+  </p>
+  <p class="refs">[2] Dunfield and Krishnaswami. ICFP'13. Complete and easy bidirectional typechecking for higher-rank polymorphism.</p>
+</section>
+
+
+<section>
+  <h2>Fully Mechanized Development in Lean 4</h2>
+  <div style="margin-bottom: 3%;">
+    <div class="half">
+    <b>$\declang$ Declarative Specification</b>
+    <ul style="font-size: smaller;">
+      <li>Combined Type-and-Qualifier Subtyping</li>
+      <li>Semantic Type Soundness</li>
+    </ul>
+    </div>
+    <div class="half">
+    <b>$\algolang$ Algorithm Implementation</b>
+    <ul style="font-size: smaller;">
+      <li>Qualifier Checking and Inference</li>
+      <li>Algorithmic Avoidance Conversion</li>
+    </ul>
+    </div>
+  </div>
+  <div style="margin-bottom: 3%;">
+  <b>Soundness and Decidability:</b>
+  <span style="font-size: smaller;">
+  Algorithm $\algolang$ decides terms in finitely many steps, <br>and
+  all accepted terms are valid in Specification $\declang$.
+  </span>
+  </div>
+  <div>
+  <b>Evaluation Examples</b> <br>
+  <ul style="font-size: smaller;">
+    <li>Church-encodings of data structures, and primitive pairs and lists</li>
+    <li>Race-free parallelism, and safe scoped file programming</li>
+    <li>
+      Escaping data structures, and structures with separate components (e.g., <code>MList</code>)
+    </li>
+  </ul>
+  <pre style="margin-left: 2%; width: 90%;"><code data-trim>
+  let a = ref 42; let b = ref 42; let c = ref 42
+  let lst =    a :: b :: c :: mnil    //: MList[Ref[Int]]??~{a,b,c}??
+  let lstErr = a :: b :: a :: mnil    // !!Error:!! a is not separate from b::a::mnil
+  </code></pre>
+  </div>
+</section>
+
+
+<section>
+  <h2>Evaluation: Annotation Burden of Qualifiers</h2>
+  <figure>
+    <canvas id="qelems" style="width: 100%;"></canvas>
+    <figcaption>
+    In most cases, qualifiers add $\lt 20\%$ size;
+    should be lower on larger examples.
+    </figcaption>
+  </figure>
+  <script>
+    window.charts.qelems = {
+      type: "scatter",
+      options: {
+        scales: {
+          x: {
+            min: 20,
+            max: 110,
+            title: {
+              display: true,
+              text: "AST Size"
+            }
+          },
+          y: {
+            title: {
+              display: true,
+              text: "Qualifier Addition (%)"
+            },
+            ticks: { callback: (n) => `${n}%` }
+          }
+        }
+      },
+      data: { datasets: [
+        {
+          label: "w/ Native Data Types",
+          data: [
+            [30,  0 ],
+            [33,  0 ],
+            [45,  10],
+            [45,  10],
+            [49,  11],
+            [53,  10],
+            [54,  8 ],
+            [54,  8 ],
+            [66,  3 ],
+            [65,  7 ],
+            [57,  8 ],
+            [56,  17],
+            [56,  17],
+            [35,  59],
+            [76,  21],
+            [103, 20],
+            [80,  3 ],
+            [94,  22],
+          ],
+        },
+        {
+          label: "ref=20%",
+          data: [ [0, 20], [110, 20] ],
+          showLine: true,
+          elements: {
+            point: { pointStyle: false },
+            line: { borderDash: [5, 15] }
+          }
+        },
+      ]}
+    }
+  </script>
+</section>
+
+
+<section>
+  <h2>Evaluation: Type Checking Performance</h2>
+  <figure>
+  <canvas id="qperf" style="width: 100%;"></canvas>
+  <figcaption>
+  The timings of $\algolang$ checking different examples fits a quadratic curve.
+  </figcaption>
+  </figure>
+  <script>
+  window.charts.qperf = {
+    type: "scatter",
+    options: {
+      scales: {
+        x: {
+          type: "logarithmic",
+          title: {
+            display: true,
+            text: "AST Size"
+          }
+        },
+        y: {
+          type: "logarithmic",
+          title: {
+            display: true,
+            text: "Time (ms)"
+          }
+        }
+      }
+    },
+    data: { datasets: [
+      {
+        label: 'w/ Native DT',
+        data: [
+          [30, 0.25],
+          [33, 0.35],
+          [45, 0.90],
+          [45, 0.85],
+          [49, 1.30],
+          [53, 1.25],
+          [54, 1.05],
+          [54, 1.05],
+          [66, 1.50],
+          [65, 1.75],
+          [57, 1.25],
+          [56, 1.35],
+          [56, 1.10],
+          [35, 0.45],
+          [76, 1.65],
+          [103, 2.85],
+          [80, 2.15],
+          [94, 2.40],
+        ],
+      },
+      {
+        label: 'w/ Encoded DT',
+        data: [
+          [663, 50.50],
+          [666, 45.10],
+          [437, 33.00],
+          [437, 35.40],
+          [322, 20.65],
+          [363, 23.35],
+          [446, 34.95],
+          [446, 34.70],
+          [586, 37.95],
+          [651, 42.90],
+          [606, 38.00],
+          [409, 30.00],
+          [409, 30.20],
+          [132, 4.00],
+          [599, 46.55],
+          [704, 61.30],
+          [836, 95.95],
+          [797, 66.50],
+          [606, 50.15],
+          [495, 38.65],
+        ],
+      },
+      {
+        label: 'ChurchNat scaling',
+        data: [
+          [92 + 123 + 171, 26.800000],
+          [155 + 194 + 270, 47.250000],
+          [218 + 265 + 369, 69.300000],
+          [281 + 336 + 468, 93.200000],
+          [344 + 407 + 567, 118.850000],
+          [407 + 478 + 666, 148.600000],
+          [470 + 549 + 765, 177.550000],
+          [533 + 620 + 864, 210.950000],
+          [596 + 691 + 963, 257.700000],
+          [659 + 762 + 1062, 284.100000],
+          [722 + 833 + 1161, 332.050000],
+          [785 + 904 + 1260, 369.350000],
+          [848 + 975 + 1359, 420.900000],
+          [911 + 1046 + 1458, 481.750000],
+          [974 + 1117 + 1557, 525.100000],
+          [1037 + 1188 + 1656, 596.450000],
+          [1100 + 1259 + 1755, 653.550000],
+          [1163 + 1330 + 1854, 726.550000],
+          [1226 + 1401 + 1953, 804.100000],
+          [1289 + 1472 + 2052, 879.650000],
+          [1352 + 1543 + 2151, 974.850000],
+          [1415 + 1614 + 2250, 1066.350000],
+          [1478 + 1685 + 2349, 1263.600000],
+          [1541 + 1756 + 2448, 1287.750000],
+        ],
+      },
+      {
+        label: "αx²+βx fit",
+        data: (function () {
+          let res = [];
+          for (let i = 30; i < 6000; i += 100) {
+            let tmp = 3.17954723e-05 * i * i + 3.61215534e-02 * i;
+            res.push([i, tmp]);
+          }
+          return res;
+        })(),
+        showLine: true,
+        elements: {
+          point: { pointStyle: false },
+          line: { borderDash: [5, 15] }
+        }
+      }
+    ]}
+  }
+  </script>
+</section>
+
+
+<section>
+  <h2>Landscape: Reachability Types</h2>
+  <div>
+    <div class="half">
+      <h4>Language Design</h4>
+      Qualifiers <span class="cite">[OOPSLA'21]</span> <br>
+      Polymorphism <span class="cite">[POPL'24]</span>
+    </div>
+    <div class="half">
+      <h4>Effect Reasoning</h4>
+      Graph IR Compiler <span class="cite">[OOPSLA'23]</span> <br>
+      Equational Theory <span class="cite">[OOPSLA'25]</span> <br>
+      Typestate <span class="cite">[PLDI'26] </span> <span class="newtag">Wednesday!</span>
+    </div>
+  </div>
+  <div style="margin-top: 5%;">
+    <div class="half">
+      <h4>Store Topology</h4>
+      Cycles in Store <span class="cite">[OOPSLA'25] </span> <span class="newtag">Wednesday!</span> <br>
+      Arenas with Scopes <span class="cite">[OOPSLA'26]</span>
+    </div>
+    <div class="half">
+      <h4>Algorithm & Impl <span class="newtag">This Work</span></h4>
+      <div style="font-size: smaller;">
+      <em>Sound and Expressive?</em> <br>
+      <em>Escaping Data Types?</em> <br>
+      Guide to Prototype Designs <span class="cite">[3,4]</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="refs">
+    [3] Kraks/diamond-lang: A prototype programming language with polymorphic reachability types that track freshness, sharing and separation. <br>
+    [4] Tantalus13A98B5F/fsground: An F# Implementation of Reachability Types
+  </p>
+</section>
+
+
+<section>
+  <h2>Conclusion: Escape with Your Self</h2>
+  <div>
+    <div class="half" style="width: 54%;">
+    <h4>Expressive Algorithmic Reachability Types</h4>
+    <ul style="font-size: smaller;">
+      <li>tracking resources in <u>escaping</u> data</li>
+      <li><u>avoiding</u> ill-scoped variables from types</li>
+      <li>inference for reachability <u>polymorphism</u></li>
+    </ul>
+    </div>
+    <div class="half" style="text-align: center; width: 40%;">
+      <blockquote style="margin-left: 0; color: #666; width: 75%;">
+      <b>Self-Reference:</b> <br>
+      both the key mechanism, <br>
+      and the main challenge
+      </blockquote>
+    </div>
+  </div>
+  <div style="margin: 3% 0;">
+    <div class="half">
+    <h4>$\declang$ Declarative Specification</h4>
+    <ul style="font-size: smaller;">
+      <li>combined type-and-qualifier subtyping</li>
+      <li>expressive for self-reference conversions</li>
+      <li>type soundness by logical relations</li>
+    </ul>
+    </div>
+    <div class="half">
+    <h4>$\algolang$ Algorithm Implementation</h4>
+    <ul style="font-size: smaller;">
+      <li>qualifier checking and inference</li>
+      <li>algorithmic avoidance conversion</li>
+      <li>extended bidirectional typing</li>
+    </ul>
+    </div>
+  </div>
+  <blockquote>
+    Sound and Decidable; Fully Mechanized in Lean 4
+  </blockquote>
+  <div class="refs" style="margin-left: 60%; width: 100%;">
+    <img src="assets/artifacts_available_dl.jpg" width="10%">
+    <img src="assets/artifacts_evaluated_functional_dl.jpg" width="10%">
+    <img src="assets/artifacts_evaluated_reusable_dl.jpg" width="10%">
+  </div>
+</section>
+
+
+<section data-visibility="hidden">
+  <h2>Alternative Designs</h2>
+</section>
+
+
+<section data-visibility="hidden">
+  <h2>Incompleteness</h2>
+</section>

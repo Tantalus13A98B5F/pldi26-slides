@@ -1,0 +1,156 @@
+:root {
+  --r-overlay-element-bg-color: 0,0,0;
+  --r-overlay-element-fg-color: 240,240,240;
+}
+
+.reveal .slides section {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  /* outline: 2px solid red; */
+}
+
+.centering {
+  text-align: center;
+}
+
+.reveal figure {
+  text-align: center;
+}
+
+h1,h2,h3,h4 {
+  text-transform: none !important;
+}
+
+.reveal h2 {
+  margin-bottom: 40px;
+}
+
+.reveal div.half {
+  width: 49%;
+  display: inline-block;
+  vertical-align: top;
+}
+
+.reveal div.half:not(:first-child) {
+  margin-left: 1%;
+}
+
+.reveal div.third {
+  width: 32%;
+  display: inline-block;
+  vertical-align: top;
+}
+
+.reveal div.third:not(:first-child) {
+  margin-left: 1%;
+}
+
+.reveal pre.code-wrapper {
+  width: 100%;
+  font-size: .64em;
+}
+
+.reveal pre code {
+  max-height: unset;
+}
+
+.reveal pre.code-wrapper sup {
+  line-height: 0;
+}
+
+.reveal ul:has(li > input[type="checkbox"]) {
+  list-style: none;
+  padding-left: 0;
+}
+
+/* Align checkbox and text nicely */
+.reveal ul li:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 10px;
+}
+
+/* Scale checkboxes */
+.reveal input[type="checkbox"] {
+  transform: scale(2);
+  transform-origin: center;
+  /* keep spacing reasonable after scaling */
+  margin: 0.08rem 0.4rem 0.08rem 0;
+  line-height: 1;
+}
+
+.reveal .smaller {
+  font-size: smaller;
+}
+
+.reveal .newtag {
+  font-size: smaller;
+  color: red;
+  vertical-align: top;
+  font-style: italic;
+}
+
+.reveal .cite {
+  font-size: 24pt;
+  color: gray;
+}
+
+.reveal .refs {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  font-size: 20pt;
+  color: gray;
+  width: 90%;
+}
+
+.reveal .hardline {
+  border: 1px solid black;
+}
+
+.reveal .treeblock {
+  display: inline-block;
+  width: auto;
+}
+
+.reveal .tabtree td {
+  border: none;
+  text-align: left;
+  padding: 0em .1em;
+}
+
+.reveal .toc .has-focus > li:not(.focus) {
+  opacity: 0.4;
+}
+
+.reveal li.focus {
+  font-weight: bold;
+  font-size: 200%;
+}
+
+.reveal li.focus li,blockquote {
+  font-weight: normal;
+  font-size: 50%;
+}
+
+.reveal .one-by-one .fragment {
+  opacity: 0;
+  height: 0;
+  visibility: hidden;
+}
+.reveal .one-by-one .fragment.current-fragment {
+  opacity: 1;
+  height: inherit;
+  visibility: inherit;
+}
+
+.reveal .fragment.semi-fade-out.visible {
+  opacity: .6 !important;
+}
+
+.reveal .fragment.hlred-now.current-fragment {
+  color: red;
+}
