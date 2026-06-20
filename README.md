@@ -8,3 +8,5 @@ Slides References:
 - [Reveal.js](https://revealjs.com/)
 - [Mermaid.js](https://mermaid.ai/open-source/)
 - [Chart.js](https://www.chartjs.org/docs/latest/)
+- [MathJax4](https://docs.mathjax.org/en/v4.1/)
+- [highlight.js](https://highlightjs.org/)
