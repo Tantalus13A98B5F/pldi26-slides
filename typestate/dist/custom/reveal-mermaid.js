@@ -5,7 +5,7 @@
  * mermaid and ELK share a single module instance without an import map. */
 const RevealMermaid = () => ({
   id: 'mermaid',
-  init: async function (reveal) {
+  init: function (reveal) {
     const config = reveal.getConfig().mermaid || {};
     const {
       path = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs',
@@ -14,41 +14,57 @@ const RevealMermaid = () => ({
     } = config;
 
     const resolve = p => new URL(p, document.baseURI).href;
-    const ready = new Promise((res, rej) => {
-      window.__revealMermaidReady = res;
-      window.__revealMermaidFail = rej;
-    });
-    const loader = document.createElement('script');
-    loader.type = 'module';
-    loader.textContent = `
+
+    // Detached: Reveal does not await this, so a slow/failed CDN load never
+    // blocks the deck from displaying. Errors stay contained here.
+    (async () => {
       try {
-        const mermaid = (await import('${resolve(path)}')).default;
-        const elk = (await import('${resolve(elkPath)}')).default;
-        mermaid.registerLayoutLoaders(elk);
-        window.mermaid = mermaid;
-        window.__revealMermaidReady();
+        const ready = new Promise((res, rej) => {
+          window.__revealMermaidReady = res;
+          window.__revealMermaidFail = rej;
+        });
+        const loader = document.createElement('script');
+        loader.type = 'module';
+        loader.textContent = `
+          try {
+            const mermaid = (await import('${resolve(path)}')).default;
+            const elk = (await import('${resolve(elkPath)}')).default;
+            mermaid.registerLayoutLoaders(elk);
+            window.mermaid = mermaid;
+            window.__revealMermaidReady();
+          } catch (e) {
+            console.error('[reveal-mermaid] load failed', e);
+            window.__revealMermaidFail(e);
+          }
+        `;
+        document.head.appendChild(loader);
+
+        // Timeout so a stalled CDN fails loudly instead of leaving the
+        // promise pending forever (notably on iOS Safari).
+        await Promise.race([
+          ready,
+          new Promise((_, rej) =>
+            setTimeout(() => rej(new Error('mermaid load timeout')), 8000)),
+        ]);
+
+        window.mermaid.initialize({ startOnLoad: false, ...mermaidConfig });
+
+        const nodes = reveal.getRevealElement().querySelectorAll('.my-mermaid');
+        let i = 0;
+        for (const node of nodes) {
+          const { svg } = await window.mermaid.render(
+            `mermaid-svg-${i++}`, node.textContent.trim());
+          node.innerHTML = svg;
+          const el = node.querySelector('svg');
+          el.removeAttribute('width');
+          el.removeAttribute('height');
+          el.style.maxWidth = 'none';
+          el.style.width = '100%';
+          el.style.height = '100%';
+        }
       } catch (e) {
-        console.error('[reveal-mermaid] load failed', e);
-        window.__revealMermaidFail(e);
+        console.error('[reveal-mermaid] init aborted', e);
       }
-    `;
-    document.head.appendChild(loader);
-    await ready;
-
-    mermaid.initialize({ startOnLoad: false, ...mermaidConfig });
-
-    const nodes = reveal.getRevealElement().querySelectorAll('.my-mermaid');
-    let i = 0;
-    for (const node of nodes) {
-      const { svg, bindFunctions } = await mermaid.render(`mermaid-svg-${i++}`, node.textContent.trim());
-      node.innerHTML = svg;
-      const el = node.querySelector('svg');
-      el.removeAttribute('width');
-      el.removeAttribute('height');
-      el.style.maxWidth = 'none';
-      el.style.width = '100%';
-      el.style.height = '100%';
-      bindFunctions?.(node);
-    }
+    })();
   }
 });
